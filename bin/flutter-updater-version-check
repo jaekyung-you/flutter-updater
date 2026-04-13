@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+# flutter-updater-version-check — check if the skill itself has an update available
+# Compares local VERSION file against latest GitHub release tag
+# Output: empty if up to date, update message if new version available
+
+set -euo pipefail
+
+SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+LOCAL_VERSION=$(cat "$SKILL_DIR/VERSION" 2>/dev/null | tr -d '[:space:]') || LOCAL_VERSION=""
+
+[ -z "$LOCAL_VERSION" ] && exit 0  # No VERSION file, skip check
+
+# Respect a 24h cooldown to avoid hitting GitHub on every invocation
+STAMP_FILE="${FLUTTER_UPDATER_HOME:-$HOME/.flutter-updater}/.version-check-stamp"
+mkdir -p "$(dirname "$STAMP_FILE")"
+
+if [ -f "$STAMP_FILE" ]; then
+  LAST=$(cat "$STAMP_FILE" 2>/dev/null | tr -d '[:space:]') || LAST=0
+  NOW=$(date +%s)
+  DIFF=$((NOW - LAST))
+  [ "$DIFF" -lt 86400 ] && exit 0  # checked within 24h, skip
+fi
+
+# Fetch latest release from GitHub
+LATEST=$(curl -sf --max-time 8 \
+  "https://api.github.com/repos/YOUR_GITHUB_USERNAME/flutter-updater/releases/latest" \
+  -H "Accept: application/vnd.github+json" \
+  -H "User-Agent: flutter-updater-skill/1.0.0" 2>/dev/null | \
+  python3 -c "import json,sys; print(json.load(sys.stdin).get('tag_name','').lstrip('v'))" 2>/dev/null) || LATEST=""
+
+# Update stamp
+date +%s > "$STAMP_FILE" 2>/dev/null || true
+
+[ -z "$LATEST" ] && exit 0  # Can't determine, skip silently
+
+# Compare
+if [ "$LATEST" != "$LOCAL_VERSION" ]; then
+  echo "flutter-updater update available: v$LOCAL_VERSION → v$LATEST"
+  echo "Install: clawhub install flutter-updater"
+fi

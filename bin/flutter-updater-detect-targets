@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# flutter-updater-detect-targets — detect available Flutter build targets in current project
+# Usage:
+#   flutter-updater-detect-targets
+#
+# Output: space-separated list of available targets from: android ios web macos linux windows
+# Example output: "android web"
+
+set -euo pipefail
+
+targets=()
+
+[ -d "android" ] && targets+=("android")
+[ -d "ios" ] && targets+=("ios")
+[ -d "web" ] && targets+=("web")
+[ -d "macos" ] && targets+=("macos")
+[ -d "linux" ] && targets+=("linux")
+[ -d "windows" ] && targets+=("windows")
+
+if [ ${#targets[@]} -eq 0 ]; then
+  # Pure Dart package (no platform targets)
+  echo "dart_only"
+else
+  echo "${targets[*]}"
+fi

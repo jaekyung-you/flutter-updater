@@ -1,0 +1,123 @@
+#!/usr/bin/env bash
+# flutter-updater-state — per-project state management
+# Usage:
+#   flutter-updater-state get-last-check          # echo ISO timestamp or empty
+#   flutter-updater-state set-last-check          # update last check to now
+#   flutter-updater-state log-update <json>       # append to history.jsonl
+#   flutter-updater-state show-history [N]        # show last N updates (default 10)
+#   flutter-updater-state slug                    # echo project slug
+
+set -euo pipefail
+
+STATE_DIR="${FLUTTER_UPDATER_HOME:-$HOME/.flutter-updater}"
+
+# Derive project slug from directory
+_slug() {
+  local dir
+  dir=$(pwd)
+  # Use git remote if available
+  local remote
+  remote=$(git remote get-url origin 2>/dev/null | sed 's/.*[:/]\([^/]*\)\/\([^/]*\)\.git.*/\1_\2/' | sed 's/[^a-zA-Z0-9_-]/_/g' 2>/dev/null) || true
+  if [ -n "$remote" ]; then
+    echo "$remote"
+  else
+    # Fall back to directory name
+    basename "$dir" | sed 's/[^a-zA-Z0-9_-]/_/g'
+  fi
+}
+
+SLUG=$(_slug)
+PROJECT_DIR="$STATE_DIR/projects/$SLUG"
+STATE_FILE="$PROJECT_DIR/state.json"
+HISTORY_FILE="$PROJECT_DIR/history.jsonl"
+
+mkdir -p "$PROJECT_DIR"
+
+CMD="${1:-slug}"
+
+case "$CMD" in
+  slug)
+    echo "$SLUG"
+    ;;
+
+  get-last-check)
+    if [ -f "$STATE_FILE" ]; then
+      python3 -c "
+import json
+with open('$STATE_FILE') as f:
+    s = json.load(f)
+print(s.get('last_check', ''))
+" 2>/dev/null || echo ""
+    else
+      echo ""
+    fi
+    ;;
+
+  set-last-check)
+    NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    if [ -f "$STATE_FILE" ]; then
+      python3 -c "
+import json
+with open('$STATE_FILE') as f:
+    s = json.load(f)
+s['last_check'] = '$NOW'
+with open('$STATE_FILE', 'w') as f:
+    json.dump(s, f, indent=2)
+" 2>/dev/null
+    else
+      echo "{\"last_check\": \"$NOW\"}" > "$STATE_FILE"
+    fi
+    echo "Last check updated: $NOW"
+    ;;
+
+  log-update)
+    JSON="${2:-{\}}"
+    NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    # Merge timestamp into provided JSON
+    python3 -c "
+import json, sys
+entry = json.loads('''$JSON''')
+entry['ts'] = '$NOW'
+entry['project'] = '$SLUG'
+print(json.dumps(entry))
+" >> "$HISTORY_FILE" 2>/dev/null || echo "{\"ts\":\"$NOW\",\"project\":\"$SLUG\",\"raw\":\"$JSON\"}" >> "$HISTORY_FILE"
+    ;;
+
+  show-history)
+    LIMIT="${2:-10}"
+    if [ ! -f "$HISTORY_FILE" ]; then
+      echo "No update history for project: $SLUG"
+      exit 0
+    fi
+    echo "Update history for: $SLUG"
+    echo "---"
+    tail -n "$LIMIT" "$HISTORY_FILE" | python3 -c "
+import json, sys
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    try:
+        e = json.loads(line)
+        ts = e.get('ts', '?')
+        updated = e.get('updated', [])
+        skipped = e.get('skipped', [])
+        sdk = e.get('sdk_updated', '')
+        parts = []
+        if sdk:
+            parts.append(f'SDK: {sdk}')
+        if updated:
+            parts.append(f'updated: {chr(44).join(updated)}')
+        if skipped:
+            parts.append(f'skipped: {chr(44).join(skipped)}')
+        print(f'  {ts}  {chr(32).join(parts) if parts else \"(no changes)\"}')
+    except Exception:
+        print(f'  {line}')
+"
+    ;;
+
+  *)
+    echo "Usage: flutter-updater-state <slug|get-last-check|set-last-check|log-update|show-history>" >&2
+    exit 1
+    ;;
+esac

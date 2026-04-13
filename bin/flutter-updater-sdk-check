@@ -1,0 +1,92 @@
+#!/usr/bin/env bash
+# flutter-updater-sdk-check — check current vs latest Flutter SDK
+# Usage:
+#   flutter-updater-sdk-check [stable|beta]
+#
+# Output (one per line):
+#   CURRENT:<version>
+#   LATEST:<version>
+#   UPDATE_AVAILABLE   (only if current < latest)
+#   UP_TO_DATE         (only if current >= latest)
+
+set -euo pipefail
+
+CHANNEL="${1:-stable}"
+
+# Get current Flutter version
+CURRENT=""
+if command -v flutter &>/dev/null; then
+  VERSION_JSON=$(flutter --version --machine 2>/dev/null) || VERSION_JSON=""
+  if [ -n "$VERSION_JSON" ]; then
+    CURRENT=$(echo "$VERSION_JSON" | python3 -c "
+import json, sys
+data = json.load(sys.stdin)
+print(data.get('frameworkVersion', ''))
+" 2>/dev/null) || CURRENT=""
+  fi
+fi
+
+if [ -z "$CURRENT" ]; then
+  echo "ERROR: flutter not found or --version --machine failed" >&2
+  exit 1
+fi
+
+echo "CURRENT:$CURRENT"
+
+# Fetch latest from GitHub releases API
+RELEASES=$(curl -sf --max-time 15 \
+  "https://api.github.com/repos/flutter/flutter/releases?per_page=50" \
+  -H "Accept: application/vnd.github+json" \
+  -H "User-Agent: flutter-updater-skill/1.0.0" 2>/dev/null) || {
+  echo "ERROR: Could not reach GitHub API" >&2
+  exit 1
+}
+
+LATEST=$(echo "$RELEASES" | python3 - "$CHANNEL" <<'PYEOF'
+import json, sys, re
+
+channel = sys.argv[1]
+releases = json.load(sys.stdin)
+
+for r in releases:
+    tag = r.get('tag_name', '')
+    prerelease = r.get('prerelease', True)
+    if channel == 'stable':
+        # Stable: not prerelease, pure semver tag (no suffix)
+        if not prerelease and re.match(r'^\d+\.\d+\.\d+$', tag):
+            print(tag)
+            break
+    elif channel == 'beta':
+        # Beta: prerelease with 'beta' in tag
+        if prerelease and 'beta' in tag.lower():
+            print(tag)
+            break
+PYEOF
+) || LATEST=""
+
+if [ -z "$LATEST" ]; then
+  echo "ERROR: Could not determine latest $CHANNEL version" >&2
+  exit 1
+fi
+
+echo "LATEST:$LATEST"
+
+# Compare versions
+python3 - "$CURRENT" "$LATEST" <<'PYEOF'
+import sys, re
+
+def parse(v):
+    parts = re.split(r'[.+\-]', v)
+    try:
+        return tuple(int(x) for x in parts[:3])
+    except Exception:
+        return (0, 0, 0)
+
+current = parse(sys.argv[1])
+latest = parse(sys.argv[2])
+
+if latest > current:
+    print("UPDATE_AVAILABLE")
+else:
+    print("UP_TO_DATE")
+PYEOF

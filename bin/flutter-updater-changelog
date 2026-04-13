@@ -1,0 +1,150 @@
+#!/usr/bin/env bash
+# flutter-updater-changelog — fetch changelog for a pub.dev package
+# Usage:
+#   flutter-updater-changelog <package_name> <target_version>
+#
+# Output: the relevant CHANGELOG section for the target version, or empty on failure
+# Exits 0 on success, 1 if changelog could not be fetched
+
+set -euo pipefail
+
+PACKAGE="${1:-}"
+VERSION="${2:-}"
+
+[ -z "$PACKAGE" ] && { echo "Usage: flutter-updater-changelog <package> <version>" >&2; exit 1; }
+[ -z "$VERSION" ] && { echo "Usage: flutter-updater-changelog <package> <version>" >&2; exit 1; }
+
+# 1. Query pub.dev API for repository URL
+API_RESP=$(curl -sf --max-time 10 \
+  -H "User-Agent: flutter-updater-skill/1.0.0" \
+  "https://pub.dev/api/packages/$PACKAGE" 2>/dev/null) || {
+  echo "WARN: Could not reach pub.dev API for $PACKAGE" >&2
+  exit 1
+}
+
+# Extract repository or homepage URL
+REPO_URL=$(echo "$API_RESP" | python3 -c "
+import json, sys
+data = json.load(sys.stdin)
+pubspec = data.get('latest', {}).get('pubspec', {})
+url = pubspec.get('repository') or pubspec.get('homepage') or ''
+print(url)
+" 2>/dev/null) || REPO_URL=""
+
+# 2. Try to fetch CHANGELOG.md from GitHub raw content
+fetch_changelog_from_github() {
+  local github_url="$1"
+  # Extract owner/repo from GitHub URL
+  local owner_repo
+  owner_repo=$(echo "$github_url" | sed -E 's|https?://github.com/([^/]+/[^/]+).*|\1|' | sed 's|\.git$||')
+
+  [ -z "$owner_repo" ] && return 1
+  [ "$owner_repo" = "$github_url" ] && return 1  # sed didn't match
+
+  local raw_base="https://raw.githubusercontent.com/$owner_repo"
+
+  # Try main branch first, then master
+  for branch in main master; do
+    local content
+    content=$(curl -sf --max-time 10 "$raw_base/$branch/CHANGELOG.md" 2>/dev/null) || continue
+    echo "$content"
+    return 0
+  done
+  return 1
+}
+
+CHANGELOG=""
+
+if echo "$REPO_URL" | grep -q "github.com"; then
+  CHANGELOG=$(fetch_changelog_from_github "$REPO_URL") || CHANGELOG=""
+fi
+
+# 3. Fallback: scrape pub.dev changelog page
+if [ -z "$CHANGELOG" ]; then
+  PUBDEV_CHANGE=$(curl -sf --max-time 10 \
+    -H "User-Agent: flutter-updater-skill/1.0.0" \
+    "https://pub.dev/packages/$PACKAGE/changelog" 2>/dev/null) || PUBDEV_CHANGE=""
+
+  if [ -n "$PUBDEV_CHANGE" ]; then
+    # Extract text content from HTML (very basic)
+    CHANGELOG=$(echo "$PUBDEV_CHANGE" | python3 -c "
+import sys, re
+html = sys.stdin.read()
+# Remove script/style tags
+html = re.sub(r'<script[^>]*>.*?</script>', '', html, flags=re.DOTALL)
+html = re.sub(r'<style[^>]*>.*?</style>', '', html, flags=re.DOTALL)
+# Remove HTML tags
+text = re.sub(r'<[^>]+>', '', html)
+# Clean up whitespace
+lines = [l.strip() for l in text.split('\n') if l.strip()]
+# Find changelog section (look for version headers)
+out = []
+for line in lines:
+    if line:
+        out.append(line)
+print('\n'.join(out[:200]))  # limit output
+" 2>/dev/null) || CHANGELOG=""
+  fi
+fi
+
+if [ -z "$CHANGELOG" ]; then
+  echo "WARN: Could not fetch changelog for $PACKAGE" >&2
+  exit 1
+fi
+
+# 4. Extract the relevant version section from the changelog
+echo "$CHANGELOG" | python3 - "$VERSION" <<'PYEOF'
+import sys, re
+
+target = sys.argv[1]
+content = sys.stdin.read()
+
+# Normalize: find section headers like "## 1.2.0", "# [1.2.0]", "## v1.2.0", "## 1.2.0 (2024-01-01)"
+# We want the section for the target major version and anything between it and the previous major
+version_pattern = re.compile(
+    r'^#+\s*(?:v|version\s+)?([\d]+\.[\d]+\.[\d]+)',
+    re.MULTILINE | re.IGNORECASE
+)
+
+sections = []
+for m in version_pattern.finditer(content):
+    sections.append((m.start(), m.group(1)))
+
+if not sections:
+    # No version headers found — output the first 100 lines
+    lines = content.split('\n')[:100]
+    print('\n'.join(lines))
+    sys.exit(0)
+
+# Find the target version or the closest version >= target
+target_parts = [int(x) for x in re.split(r'[.\-]', target)[:3]]
+
+def version_tuple(v):
+    parts = re.split(r'[.\-]', v)
+    try:
+        return tuple(int(x) for x in parts[:3])
+    except Exception:
+        return (0, 0, 0)
+
+target_tuple = tuple(target_parts)
+
+# Find the best matching section (exact match or first section >= target)
+best_idx = None
+for i, (pos, ver) in enumerate(sections):
+    vt = version_tuple(ver)
+    if vt >= target_tuple:
+        best_idx = i
+
+if best_idx is None:
+    best_idx = 0  # fallback: use first section
+
+start_pos = sections[best_idx][0]
+end_pos = sections[best_idx + 1][0] if best_idx + 1 < len(sections) else len(content)
+
+section = content[start_pos:end_pos].strip()
+
+# Output at most 150 lines to keep output manageable
+lines = section.split('\n')[:150]
+print('\n'.join(lines))
+
+PYEOF

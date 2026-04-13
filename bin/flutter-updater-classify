@@ -1,0 +1,168 @@
+#!/usr/bin/env bash
+# flutter-updater-classify — classify dependencies from dart pub outdated --json
+# Usage:
+#   dart pub outdated --json | flutter-updater-classify [pubspec.yaml] [ignored_packages]
+#
+# Output lines (one per package):
+#   SAFE:<name>:<current>:<upgradable>
+#   BREAKING:<name>:<current>:<latest>
+#   UP_TO_DATE:<name>:<current>
+#   SKIP_PATH:<name>
+#   SKIP_GIT:<name>
+#   SKIP_SDK:<name>
+#   SKIP_IGNORED:<name>:<current>
+
+set -euo pipefail
+
+PUBSPEC="${1:-pubspec.yaml}"
+IGNORED="${2:-}"  # comma-separated ignored package names
+
+# Read stdin (dart pub outdated --json output)
+OUTDATED_JSON=$(cat)
+
+python3 - "$PUBSPEC" "$IGNORED" "$OUTDATED_JSON" <<'PYEOF'
+import json, sys, re
+
+pubspec_path = sys.argv[1]
+ignored_raw = sys.argv[2]
+outdated_json = sys.argv[3]
+
+ignored = set(p.strip() for p in ignored_raw.split(',') if p.strip())
+
+# Parse pubspec.yaml to find path/git deps (simple text scan — no yaml lib needed)
+path_deps = set()
+git_deps = set()
+sdk_deps = set({'flutter', 'dart'})
+
+try:
+    with open(pubspec_path) as f:
+        content = f.read()
+
+    # Find path deps: lines like "  package_name:\n    path: ..."
+    # Simple approach: find "path:" occurrences and look back for the package name
+    lines = content.split('\n')
+    current_dep_name = None
+    in_deps_section = False
+
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        # Detect dependency sections
+        if re.match(r'^(dependencies|dev_dependencies|dependency_overrides)\s*:', line):
+            in_deps_section = True
+            continue
+        # Detect top-level key (non-indented) - end of dep section
+        if in_deps_section and re.match(r'^[a-z]', line) and not line.startswith(' '):
+            in_deps_section = False
+            continue
+        # Detect package name (indented by 2, followed by :)
+        if in_deps_section:
+            m = re.match(r'^  ([a-z_][a-zA-Z0-9_]*)\s*:', line)
+            if m:
+                current_dep_name = m.group(1)
+            # Detect path dep
+            if current_dep_name and re.match(r'^\s+path\s*:', line):
+                path_deps.add(current_dep_name)
+            # Detect git dep
+            if current_dep_name and re.match(r'^\s+git\s*:', line):
+                git_deps.add(current_dep_name)
+            # Detect SDK dep
+            if current_dep_name and re.match(r'^\s+sdk\s*:', line):
+                sdk_deps.add(current_dep_name)
+except Exception:
+    pass  # Can't parse pubspec, proceed without path/git detection
+
+# Parse dart pub outdated --json
+try:
+    data = json.loads(outdated_json)
+except Exception as e:
+    print(f"ERROR: Could not parse dart pub outdated output: {e}", file=sys.stderr)
+    sys.exit(1)
+
+packages = data.get('packages', [])
+
+def major(v):
+    """Extract major version number from a version string like '1.2.3' or '0.13.5'"""
+    if not v:
+        return -1
+    parts = re.split(r'[.+\-]', v)
+    try:
+        return int(parts[0])
+    except Exception:
+        return -1
+
+def minor(v):
+    if not v:
+        return -1
+    parts = re.split(r'[.+\-]', v)
+    try:
+        return int(parts[1]) if len(parts) > 1 else 0
+    except Exception:
+        return 0
+
+def is_breaking(current, latest):
+    """True if the update is a breaking (major) version change."""
+    if not current or not latest:
+        return False
+    c_major = major(current)
+    l_major = major(latest)
+    # Major version bump is always breaking
+    if l_major > c_major:
+        return True
+    # For pre-1.0 packages, minor bumps are breaking
+    if c_major == 0 and minor(latest) > minor(current):
+        return True
+    return False
+
+for pkg in packages:
+    name = pkg.get('package', '')
+    current_obj = pkg.get('current') or {}
+    upgradable_obj = pkg.get('upgradable') or {}
+    resolvable_obj = pkg.get('resolvable') or {}
+    latest_obj = pkg.get('latest') or {}
+
+    current = current_obj.get('version', '') if isinstance(current_obj, dict) else ''
+    upgradable = upgradable_obj.get('version', '') if isinstance(upgradable_obj, dict) else ''
+    resolvable = resolvable_obj.get('version', '') if isinstance(resolvable_obj, dict) else ''
+    latest = latest_obj.get('version', '') if isinstance(latest_obj, dict) else ''
+
+    if not name:
+        continue
+
+    # Classify
+    if name in sdk_deps:
+        print(f"SKIP_SDK:{name}")
+        continue
+    if name in path_deps:
+        print(f"SKIP_PATH:{name}")
+        continue
+    if name in git_deps:
+        print(f"SKIP_GIT:{name}")
+        continue
+    if name in ignored:
+        print(f"SKIP_IGNORED:{name}:{current}")
+        continue
+
+    # Already current
+    if current == latest or (not latest and current == upgradable):
+        print(f"UP_TO_DATE:{name}:{current}")
+        continue
+
+    # Safe update: can upgrade within constraint
+    if upgradable and upgradable != current and not is_breaking(current, upgradable):
+        print(f"SAFE:{name}:{current}:{upgradable}")
+        continue
+
+    # Breaking: latest is a major bump, even if upgradable is blocked by constraint
+    if latest and is_breaking(current, latest):
+        print(f"BREAKING:{name}:{current}:{latest}")
+        continue
+
+    # Has a resolvable update that isn't major
+    if resolvable and resolvable != current:
+        print(f"SAFE:{name}:{current}:{resolvable}")
+        continue
+
+    # No update possible
+    print(f"UP_TO_DATE:{name}:{current}")
+
+PYEOF

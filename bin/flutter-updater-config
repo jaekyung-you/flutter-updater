@@ -1,0 +1,94 @@
+#!/usr/bin/env bash
+# flutter-updater-config — read/write user config
+# Usage:
+#   flutter-updater-config get <key>
+#   flutter-updater-config set <key> <value>
+#   flutter-updater-config list
+#
+# Config file: ~/.flutter-updater/config.json
+# Keys:
+#   check_interval_hours  (number, default: 12)
+#   ignored_packages      (comma-separated, default: "")
+#   auto_apply_safe       (true|false, default: true)
+#   track_channel         (stable|beta, default: stable)
+
+set -euo pipefail
+
+CONFIG_DIR="${FLUTTER_UPDATER_HOME:-$HOME/.flutter-updater}"
+CONFIG_FILE="$CONFIG_DIR/config.json"
+
+mkdir -p "$CONFIG_DIR"
+
+# Initialize config if missing
+if [ ! -f "$CONFIG_FILE" ]; then
+  cat > "$CONFIG_FILE" <<'EOF'
+{
+  "check_interval_hours": 12,
+  "ignored_packages": [],
+  "auto_apply_safe": true,
+  "track_channel": "stable"
+}
+EOF
+fi
+
+CMD="${1:-list}"
+KEY="${2:-}"
+VAL="${3:-}"
+
+case "$CMD" in
+  get)
+    [ -z "$KEY" ] && { echo "Usage: flutter-updater-config get <key>" >&2; exit 1; }
+    python3 -c "
+import json, sys
+with open('$CONFIG_FILE') as f:
+    cfg = json.load(f)
+val = cfg.get('$KEY')
+if val is None:
+    sys.exit(1)
+if isinstance(val, list):
+    print(','.join(val))
+else:
+    print(val)
+" 2>/dev/null || echo ""
+    ;;
+
+  set)
+    [ -z "$KEY" ] || [ -z "$VAL" ] && { echo "Usage: flutter-updater-config set <key> <value>" >&2; exit 1; }
+    python3 -c "
+import json
+with open('$CONFIG_FILE') as f:
+    cfg = json.load(f)
+# Type coercion
+if '$KEY' == 'check_interval_hours':
+    cfg['$KEY'] = int('$VAL')
+elif '$KEY' in ('auto_apply_safe',):
+    cfg['$KEY'] = '$VAL'.lower() in ('true', '1', 'yes')
+elif '$KEY' == 'ignored_packages':
+    cfg['$KEY'] = [p.strip() for p in '$VAL'.split(',') if p.strip()]
+else:
+    cfg['$KEY'] = '$VAL'
+with open('$CONFIG_FILE', 'w') as f:
+    json.dump(cfg, f, indent=2)
+print('Set $KEY = $VAL')
+"
+    ;;
+
+  list)
+    echo "Config: $CONFIG_FILE"
+    python3 -c "
+import json
+with open('$CONFIG_FILE') as f:
+    cfg = json.load(f)
+for k, v in cfg.items():
+    if isinstance(v, list):
+        print(f'  {k} = {chr(44).join(v) if v else \"(none)\"}')
+    else:
+        print(f'  {k} = {v}')
+"
+    ;;
+
+  *)
+    echo "Usage: flutter-updater-config <get|set|list>" >&2
+    exit 1
+    ;;
+esac

@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# flutter-updater-save-report — save the update report as a dated Markdown file
+# Usage:
+#   flutter-updater-save-report <flutter_version> <report_markdown_file> [output_dir]
+#
+# Creates: <output_dir>/flutter_<version>_<YYYY-MM-DD>.md
+# Default output_dir: .flutter_updater/reports/
+#
+# If a file for the same version+date already exists, appends a numeric suffix.
+
+set -euo pipefail
+
+FLUTTER_VERSION="${1:-unknown}"
+REPORT_FILE="${2:-}"
+OUTPUT_DIR="${3:-.flutter_updater/reports}"
+
+if [ -z "$REPORT_FILE" ] || [ ! -f "$REPORT_FILE" ]; then
+  echo "Usage: flutter-updater-save-report <flutter_version> <report_file> [output_dir]" >&2
+  exit 1
+fi
+
+# Sanitize version for filename
+SAFE_VERSION=$(echo "$FLUTTER_VERSION" | sed 's/[^a-zA-Z0-9._-]/_/g')
+DATE=$(date +%Y-%m-%d)
+mkdir -p "$OUTPUT_DIR"
+
+# Determine filename (avoid collisions)
+BASE_NAME="flutter_${SAFE_VERSION}_${DATE}"
+DEST="$OUTPUT_DIR/${BASE_NAME}.md"
+COUNTER=1
+while [ -f "$DEST" ]; do
+  DEST="$OUTPUT_DIR/${BASE_NAME}_${COUNTER}.md"
+  COUNTER=$((COUNTER + 1))
+done
+
+cp "$REPORT_FILE" "$DEST"
+echo "Report saved: $DEST"
+echo "$DEST"  # also print path for caller to use
