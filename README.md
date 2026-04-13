@@ -20,8 +20,9 @@
 
 ## Installation
 
-```bash
-clawhub install flutter-updater
+```
+/plugin marketplace add jaekyung-you/flutter-updater
+/plugin install flutter-updater@flutter-updater
 ```
 
 ## Usage
@@ -65,7 +66,7 @@ If tests fail due to the update, the skill attempts to update the test code to m
 ## Requirements
 
 - Flutter SDK installed and on `PATH` (or FVM configured)
-- Claude Code with ClawHub skill support
+- Claude Code (latest version)
 
 ## What It Won't Do
 
