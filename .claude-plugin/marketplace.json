@@ -1,0 +1,24 @@
+{
+  "name": "flutter-updater",
+  "owner": {
+    "name": "jaekyung-you"
+  },
+  "metadata": {
+    "description": "Flutter/Dart auto-updater: SDK release tracking, dependency migration with breaking-change handling, dart fix, and QA pipeline."
+  },
+  "plugins": [
+    {
+      "name": "flutter-updater",
+      "source": "./",
+      "description": "Auto-update Flutter/Dart projects: SDK check, safe/breaking dependency updates with changelog analysis, dart fix, and full QA (analyze → test → build). Saves a dated report per run.",
+      "version": "1.0.0",
+      "author": {
+        "name": "jaekyung-you"
+      },
+      "homepage": "https://github.com/jaekyung-you/flutter-updater",
+      "repository": "https://github.com/jaekyung-you/flutter-updater",
+      "license": "MIT",
+      "keywords": ["flutter", "dart", "update", "migration", "qa", "pubspec", "breaking-change"]
+    }
+  ]
+}

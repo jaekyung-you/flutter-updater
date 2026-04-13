@@ -1,0 +1,12 @@
+{
+  "name": "flutter-updater",
+  "description": "Auto-update Flutter/Dart projects: detects new SDK releases, updates dependencies with breaking-change handling, applies dart fix, and runs QA (analyze → test → build).",
+  "version": "1.0.0",
+  "author": {
+    "name": "jaekyung-you"
+  },
+  "homepage": "https://github.com/jaekyung-you/flutter-updater",
+  "repository": "https://github.com/jaekyung-you/flutter-updater",
+  "license": "MIT",
+  "keywords": ["flutter", "dart", "update", "migration", "qa", "pubspec"]
+}
