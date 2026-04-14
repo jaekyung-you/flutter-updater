@@ -1,7 +1,7 @@
 {
   "name": "flutter-updater",
   "description": "Auto-update Flutter/Dart projects: detects new SDK releases, updates dependencies with breaking-change handling, applies dart fix, and runs QA (analyze → test → build).",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "author": {
     "name": "jaekyung-you"
   },

@@ -60,6 +60,25 @@ After the preamble: store `$_BIN`, `$_IGNORED`, `$_AUTO_SAFE`, `$_CHANNEL`, `$_T
 If `$_LAST_CHECK` is within `$_INTERVAL` hours AND `$_FLAG` is empty, ask the user:
 "Already checked ${_INTERVAL}h ago. Run again?" before proceeding.
 
+### Session Checkpoint (TaskCreate)
+
+Immediately after the preamble, create a TaskCreate checklist so that if the session is
+interrupted, TaskList can restore progress without re-scanning files:
+
+Create tasks for each applicable phase (mark N/A phases as already complete):
+- `[flutter-updater] Phase 0: Environment validation`
+- `[flutter-updater] Phase 1: Flutter SDK check`
+- `[flutter-updater] Phase 2: Dependency classification`
+- `[flutter-updater] Phase 3: Safe updates`
+- `[flutter-updater] Phase 3b: Pre-flight impact mapping`
+- `[flutter-updater] Phase 4: Breaking change updates`
+- `[flutter-updater] Phase 5: dart fix`
+- `[flutter-updater] Phase 6: QA`
+- `[flutter-updater] Phase 7: Save report`
+
+Mark each task complete (TaskUpdate) as soon as its phase finishes.
+On session resume, call TaskList first — skip phases already marked complete.
+
 ---
 
 ## PHASE 0: Environment Validation
@@ -117,10 +136,42 @@ If `$_AUTO_SAFE` is `true`, apply automatically; else ask user first.
 
 ```bash
 dart pub upgrade 2>&1
-dart analyze 2>&1 | head -60
+dart analyze 2>&1 | grep -E "^\s+error " | head -40
 ```
 
 Fix any `dart analyze` errors with Edit tool before proceeding.
+Only read the error lines — do not load the full analyze output into context.
+
+---
+
+## PHASE 3b: Pre-flight Impact Mapping
+
+Skip if `$_FLAG` is `--sdk-only` or `--qa-only`, or no BREAKING packages.
+
+**Run this once before the per-package loop.** Collect all affected files and patterns
+in a single grep pass rather than discovering them file-by-file during Phase 4.
+
+For each BREAKING package, extract the changed/removed API names from its changelog
+(Phase 4b will still fetch the changelog, but use these grep results to plan work):
+
+```bash
+# Example: scan all source dirs for known breaking API names at once
+grep -rl "<API_PATTERN_1>\|<API_PATTERN_2>" lib/ test/ bin/ 2>/dev/null \
+  | sort -u > /tmp/fu_affected_$$.txt
+wc -l /tmp/fu_affected_$$.txt
+cat /tmp/fu_affected_$$.txt
+```
+
+Store the affected file list. Count the hits per pattern:
+```bash
+grep -rc "<API_PATTERN>" lib/ test/ bin/ 2>/dev/null | grep -v ":0$"
+```
+
+**Decision gate — mechanical vs. complex:**
+- If a single pattern appears in N≥5 files with an identical replacement rule → mark as **mechanical** (use sed in Phase 4f)
+- Otherwise → mark as **complex** (use Read+Edit per file in Phase 4f)
+
+Save this classification per package so Phase 4f can branch immediately.
 
 ---
 
@@ -143,10 +194,13 @@ cp pubspec.lock pubspec.lock.fu_bak
 Read output. Identify: removed/renamed classes, changed signatures, migration guide URL.
 
 ### 4c — Scan Codebase
-Use Grep to find usages of removed/changed APIs in `lib/`, `test/`, `bin/`.
+Use the pre-flight results from Phase 3b (already computed). Only run additional Grep
+queries for patterns not captured upfront (e.g., patterns only visible after reading
+the full changelog).
 
 ### 4d — Confirm with User (AskUserQuestion)
-Show: package name, version bump, breaking changes summary, affected files.
+Show: package name, version bump, breaking changes summary, affected files count,
+and whether the fix path is **mechanical (sed)** or **complex (manual edit)**.
 Options: a) Yes, migrate   b) Skip this package
 
 ### 4e — Apply Update
@@ -156,10 +210,32 @@ dart pub upgrade --major-versions "<PACKAGE>" 2>&1
 If resolution fails (non-zero exit), skip to next package.
 
 ### 4f — Fix Errors (up to 3 rounds)
+
+**First:** get the error list without loading full output:
 ```bash
-dart analyze 2>&1
+dart analyze 2>&1 | grep -E "^\s+error " | head -60
 ```
-For each error: Read file → cross-reference changelog → Edit fix → re-run analyze.
+
+**Branch on fix strategy (set in Phase 3b):**
+
+#### Mechanical path (sed-first):
+If the same substitution pattern repeats across many files, apply with one command:
+```bash
+# Example: rename an API across all affected files
+grep -rl "<OLD_PATTERN>" lib/ test/ bin/ \
+  | xargs sed -i 's/<OLD_PATTERN>/<NEW_PATTERN>/g'
+```
+Then re-run analyze (filtered) to confirm the fix landed. Only fall back to
+Read+Edit for files where sed did not resolve the error.
+
+#### Complex path (Read+Edit per file):
+For each error: Read file → cross-reference changelog → Edit fix → re-run analyze (filtered).
+
+After each fix round, re-run:
+```bash
+dart analyze 2>&1 | grep -E "^\s+error " | head -60
+```
+Stop when zero errors or 3 rounds exhausted.
 
 ### 4g — Rollback If Unfixable
 Read `pubspec.yaml.fu_bak`, restore original constraint for this package via Edit, then:
@@ -171,7 +247,7 @@ Report: what failed, which files need manual fix, migration guide URL.
 ### 4h — Continue + Cleanup
 After all breaking packages:
 ```bash
-rm -f pubspec.yaml.fu_bak pubspec.lock.fu_bak
+rm -f pubspec.yaml.fu_bak pubspec.lock.fu_bak /tmp/fu_affected_$$.txt
 ```
 
 ---
@@ -187,7 +263,7 @@ dart fix --dry-run 2>&1
 If fixes available, ask user (AskUserQuestion). If confirmed:
 ```bash
 dart fix --apply 2>&1
-dart analyze 2>&1 | head -40
+dart analyze 2>&1 | grep -E "^\s+error " | head -40
 ```
 
 ---
@@ -198,9 +274,15 @@ Skip if `$_FLAG` is `--sdk-only` or `--deps-only`.
 
 ### 6a — flutter analyze
 ```bash
-flutter analyze 2>&1
+flutter analyze 2>&1 | grep -E "error •|• error|^\s+error " | head -60
 ```
-Errors: attempt Edit fixes, re-run (up to 2 rounds). Warnings: note, don't block.
+If zero error lines → pass. Otherwise attempt Edit fixes (errors only, not warnings),
+re-run filtered analyze (up to 2 rounds). Warnings: note in report, don't block.
+
+To get a full warning summary without loading all output:
+```bash
+flutter analyze 2>&1 | grep -cE "warning •|• warning" || echo "0 warnings"
+```
 
 ### 6b — flutter test
 ```bash
@@ -265,7 +347,7 @@ Before: v<OLD> → After: v<NEW>   (or: Already current / Skipped)
 
 | Package | Before | After | Type | Result |
 |---------|--------|-------|------|--------|
-| http | 0.13.5 | 1.2.2 | Breaking | ✅ Updated + auto-fixed (3 files) |
+| http | 0.13.5 | 1.2.2 | Breaking | ✅ Updated + auto-fixed (3 files, sed) |
 | provider | 6.1.2 | 6.1.4 | Safe | ✅ Updated |
 | dio | 4.0.6 | 5.4.0 | Breaking | ⚠️ Rolled back — see below |
 
@@ -295,7 +377,7 @@ N issues fixed  (or: No fixes needed / Skipped)
 - Migration guide: https://pub.dev/packages/dio/changelog#500
 
 ---
-*Generated by flutter-updater v1.0.0*
+*Generated by flutter-updater v1.1.0*
 ```
 
 ---
@@ -308,3 +390,7 @@ N issues fixed  (or: No fixes needed / Skipped)
 - **Flaky test**: Re-run once. If fails again, record as failed.
 - **Unrelated build failure**: Report, do not fix issues unrelated to the update.
 - **git**: Do NOT run any git commands. Use only file backup/restore strategy.
+- **Large analyze output**: Always pipe `flutter analyze` / `dart analyze` through grep filters.
+  Never load the raw full output into context — it can exceed 10k characters.
+- **sed failure**: If sed produces a syntax error or zero replacements, fall back to Read+Edit
+  for that file. Never apply sed without re-running analyze to confirm correctness.
