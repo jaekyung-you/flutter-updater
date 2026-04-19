@@ -88,6 +88,68 @@ If tests fail due to the update, the skill attempts to update the test code to m
 - Auto-fix test failures that are genuine regressions unrelated to the update
 - Update packages that can't be resolved due to transitive conflicts
 
+## Screenshots
+
+<details>
+<summary>Phase 4 — Breaking Change Detection</summary>
+
+Claude detects all breaking dependency updates and presents a summary table before making any changes.
+
+![Phase 4 - Breaking packages table](docs/screenshots/phase4-breaking-packages.png)
+
+You can select which package groups to update. Each group shows the version range and scope of changes.
+
+![Phase 4 - More packages selection](docs/screenshots/phase4-more-packages.png)
+
+Before proceeding, you review and confirm your selections.
+
+![Phase 4 - Review and submit](docs/screenshots/phase4-submit.png)
+
+</details>
+
+<details>
+<summary>Phase 4e — Applying Version Bumps</summary>
+
+Claude applies `pubspec.yaml` version bumps across the workspace (monorepo-aware via melos).
+
+![Phase 4e - Version bumps applied](docs/screenshots/phase4e-version-bumps.png)
+
+</details>
+
+<details>
+<summary>Phase 6a — dart analyze &amp; Error Fixes</summary>
+
+After all updates, `flutter analyze` surfaces migration errors. Claude separates update-caused errors from pre-existing ones.
+
+![Phase 6a - dart analyze run](docs/screenshots/phase6a-dart-analyze.png)
+
+Mechanical API renames (e.g., `DottedBorder` v3 options-based API) are fixed with targeted edits across all affected files.
+
+![Phase 6a - DottedBorder migration fix](docs/screenshots/phase6a-dotted-border-fix.png)
+
+More complex migrations like `local_auth` v3 and `infinite_scroll_pagination` v5 are handled with full changelog analysis.
+
+![Phase 6a - local_auth + ISP migration](docs/screenshots/phase6a-local-auth-isp.png)
+
+When a migration is too risky (ISP v5: 415 errors, 75 files), Claude surfaces a decision prompt — downgrade vs. proceed.
+
+![Phase 6a - ISP decision prompt](docs/screenshots/phase6a-isp-decision.png)
+
+</details>
+
+<details>
+<summary>Progress Tracking &amp; Final Summary</summary>
+
+Mid-run progress is tracked per phase, with live percentage estimates.
+
+![Mid-run progress table](docs/screenshots/progress-table.png)
+
+At the end, a full summary is printed: what changed, what was fixed automatically, and what needs manual attention.
+
+![Flutter Update Run - Complete](docs/screenshots/complete-summary.png)
+
+</details>
+
 ## Changelog
 
 See [CHANGELOG.md](CHANGELOG.md) for the full release history.
